@@ -8,7 +8,7 @@ output: html_document
 ```{r setup, include=FALSE}
 library(tidyverse)
 library(viridis)
-library(plotly)
+library(cowplot)
 library(patchwork)
 library(modelr)
 library(p8105.datasets)
@@ -103,8 +103,160 @@ models_results_df %>%
 
 # Problem 2
 
-```{r}
+
+Read and clean the dataset.
+```{r birth_data}
 baby_df = 
-  read_csv("./data/birthweight.csv")
+  read_csv("./data/birthweight.csv") %>% 
+  mutate(
+    babysex = case_when(babysex == 1~"male", babysex == 2~"female"),
+    malform = case_when(malform == 0~"absent", malform == 1 ~ "present")
+    ) %>% 
+  mutate(
+    across(
+      .cols = c("frace", "mrace"),
+      ~ case_when(
+        .x == 1 ~ "White",
+        .x == 2 ~ "Black",
+        .x == 3 ~ "Asian",
+        .x == 4 ~ "Puero Rican",
+        .x == 8 ~ "Other",
+        .x == 9 ~ "Unknown"
+        )
+      ),
+    across(where(is.character), as.factor)
+    ) 
+
+str(baby_df)
+# sum(is.na(baby_df)) = 0
 ```
 
+Build a regression model for birthweight.
+
+Let's try to regress birthweight on 
+`babysex`,`blength`,`gaweeks`,`momage`,`parity`,`ppwt`,`wtgain`and `smoken`.
+
+
+```{r propose_birthweight_reg}
+proposal_model = 
+  lm(bwt ~ babysex + blength + gaweeks + momage + parity + ppwt + wtgain + smoken, data = baby_df)
+
+proposal_model %>% broom::tidy() %>% knitr::kable(digits = 3)
+
+```
+
+Plot of residuals verses fitted values
+```{r proposal_plt}
+proposal_plt =
+  baby_df %>% 
+  add_predictions(proposal_model) %>%
+  add_residuals(proposal_model) 
+
+pred_plt1 = 
+  proposal_plt %>% 
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point(aes(size = resid), alpha = .1)
+
+pred_plt2 = 
+  proposal_plt %>% 
+  ggplot(aes(x = bwt, y = pred)) +
+  geom_point(alpha = .1)
+
+pred_plt3 = 
+  proposal_plt %>% 
+  ggplot(aes(x = resid))+
+  geom_density()
+
+plot_grid(pred_plt1,pred_plt2,pred_plt3, ncol = 3)
+```
+
+**Comments:**
+
+  + Residuals seems to be larger when the predict value is low.
+  
+  + The model fits well when birthweigth lies between 2000 grams to 4000 grams.
+  
+  + The distribution of residuals are approximately normal (with a long tail).
+  
+  
+Let's do the model comparison.
+
+```{r baby_crossvalidation}
+
+baby_cv = 
+  crossv_mc(baby_df, 100) %>% 
+  mutate(
+    my_model = map(train,  ~lm(bwt ~ babysex + blength + gaweeks + momage + parity + ppwt + wtgain + smoken, data = .x)),
+    simple_model = map(train, ~lm(bwt ~ bhead + gaweeks, data = .x)),
+    complex_model = map(train, ~lm(bwt ~ bhead*blength*babysex, data = .x)),
+    rmse_my = map2_dbl(my_model, test, ~rmse(model = .x, data = .y)),
+    rmse_simple = map2_dbl(simple_model, test, ~rmse(model = .x, data = .y)),
+    rmse_complex = map2_dbl(complex_model, test, ~rmse(model = .x, data = .y))
+  )
+
+baby_cv_tidy = 
+  baby_cv %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  ) %>% 
+  mutate(model = fct_inorder(model))
+  
+
+baby_cv_tidy %>% 
+  ggplot(aes(x = model, y = rmse, group = model, color = model)) +
+  geom_violin(alpha = .3) +
+  theme(legend.position = "none") +
+  labs(
+    title = "RMSE for Three Models",
+    x = "Models",
+    y = "RMSE"
+  )
+  
+  
+
+my_model = lm(bwt ~ babysex + blength + gaweeks + momage + parity + ppwt + wtgain + smoken, data = baby_df)
+simple_model = lm(bwt ~ bhead + gaweeks, data = baby_df)
+complex_model = lm(bwt ~ bhead*blength*babysex, data = baby_df)
+```
+
+We got the crossvalidation results from above 
+
+
+# Problem 3
+
+Import the data.
+```{r rnoaa_import, include = F , cache = TRUE}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+```
+
+
+```{r rnoaa_reg}
+weather_df %>%
+  ggplot(aes(x = tmin, y = tmax)) +
+  geom_point(alpha = .3) +
+  geom_smooth(method = "lm",se = F)
+```
+ 
+```{r}
+weather_boot = 
+  weather_df %>% 
+  bootstrap(n = 5000) %>%
+  mutate(
+    models = map(strap, ~lm(tmax ~ tmin, data = .x)),
+    results = map(models, broom::tidy),
+    glanced = map(models, broom::glance)
+    ) 
