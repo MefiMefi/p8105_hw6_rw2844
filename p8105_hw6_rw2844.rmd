@@ -20,7 +20,8 @@ knitr::opts_chunk$set(
 theme_set(theme_minimal() + theme(legend.position = "bottom"))
 options(
   ggplot2.continuous.colour = "viridis",
-  ggplot2.continuous.fill = "viridis"
+  ggplot2.continuous.fill = "viridis",
+  digits = 3
 )
 scale_colour_discrete = scale_color_viridis_d
 scale_fill_discrete = scale_fill_viridis_d
@@ -182,6 +183,18 @@ plot_grid(pred_plt1,pred_plt2,pred_plt3, ncol = 3)
 Let's do the model comparison.
 
 ```{r baby_crossvalidation}
+# Take a look at the regresions first
+my_model = lm(bwt ~ babysex + blength + gaweeks + momage + parity + ppwt + wtgain + smoken, data = baby_df)
+simple_model = lm(bwt ~ bhead + gaweeks, data = baby_df)
+complex_model = lm(bwt ~ bhead*blength*babysex, data = baby_df)
+
+baby_df %>% 
+  gather_predictions(my_model, simple_model, complex_model) %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = bhead, y = bwt)) + 
+  geom_point(alpha = .1, color = "green" ) + 
+  geom_line(aes(y = pred), color = "blue", alpha = .8) + 
+  facet_wrap(~model)
 
 baby_cv = 
   crossv_mc(baby_df, 100) %>% 
@@ -215,15 +228,9 @@ baby_cv_tidy %>%
     x = "Models",
     y = "RMSE"
   )
-  
-  
-
-my_model = lm(bwt ~ babysex + blength + gaweeks + momage + parity + ppwt + wtgain + smoken, data = baby_df)
-simple_model = lm(bwt ~ bhead + gaweeks, data = baby_df)
-complex_model = lm(bwt ~ bhead*blength*babysex, data = baby_df)
 ```
 
-We got the crossvalidation results from above 
+We got the crossvalidation results from above. 
 
 
 # Problem 3
@@ -243,15 +250,17 @@ weather_df =
   select(name, id, everything())
 ```
 
-
+And take a look of the regression.
 ```{r rnoaa_reg}
 weather_df %>%
   ggplot(aes(x = tmin, y = tmax)) +
   geom_point(alpha = .3) +
   geom_smooth(method = "lm",se = F)
 ```
- 
-```{r}
+
+
+Let's bootstraping
+```{r bootstrap,cache = T}
 weather_boot = 
   weather_df %>% 
   bootstrap(n = 5000) %>%
@@ -259,4 +268,60 @@ weather_boot =
     models = map(strap, ~lm(tmax ~ tmin, data = .x)),
     results = map(models, broom::tidy),
     glanced = map(models, broom::glance)
-    ) 
+    ) %>% 
+  select(-strap, -models) %>% 
+  unnest(c(results, glanced), names_repair = "unique") %>% 
+  select(.id, term, estimate, r.squared) %>% 
+  mutate(
+    term = str_replace(term, "\\(Intercept\\)", "intercept")
+  ) %>% 
+  pivot_wider(
+    names_from = term,
+    values_from = estimate
+  ) %>% 
+  mutate(
+    intersection = log(intercept * tmin),
+    .id = as.numeric(.id)
+  ) %>% 
+  select(-intercept, -tmin)
+```
+
+Let's plot the distribution of rsquare.
+```{r rsquare_plt}
+weather_boot %>% 
+  ggplot(aes(x = r.squared)) +
+  geom_density() +
+  labs(
+    title = "Distribution of Estimates of R-squared",
+    x = "R-square estimates",
+    y = "Density"
+  ) +
+  scale_x_continuous(
+    breaks = seq(.85,.95,.01)
+  )
+
+```
+
+**Comments:**
+
+The distribution of estimated r-squared is approximately normal. With the mean `r mean(weather_boot$r.squared)` and median `r median(weather_boot$r.squared)`. And the standard error of this distribution is `r sd(weather_boot$r.squared)`. Ranging from `r min(weather_boot$r.squared)` to `r max(weather_boot$r.squared)`.
+
+
+Let's plot the intersection
+```{r intercection_plt}
+weather_boot %>% 
+  ggplot(aes(x = intersection)) +
+  geom_density() +
+  labs(
+    title = "Distribution of Estimates of Coefficients Intersections",
+    x = "Coefficients Estimates Intersection",
+    y = "Density"
+  ) +
+  scale_x_continuous(
+    breaks = seq(1.90, 2.15, .02)
+  )
+```
+
+**Comments:**
+
+The distribution of the natural log of the intersection of estimated coefficients is approximately normal. With the mean `r mean(weather_boot$intersection)` and median `r median(weather_boot$intersection)`. And the standard error of this distribution is `r sd(weather_boot$intersection)`. Ranging from `r min(weather_boot$intersection)` to `r max(weather_boot$intersection)`.
